@@ -20,17 +20,30 @@ import metrics
 import urllib
 from common import *
 from datetime import datetime
+from requests import patch, post
+from os.path import basename
 
 ENV = os.getenv("ENV", "")
 
 
 def event_object(event):
-    bucket = event['Records'][0]['s3']['bucket']['name']
-    key = urllib.unquote_plus(event['Records'][0]['s3']['object']['key'].encode('utf8'))
+    message = json.loads(event['Records'][0]['Sns']['Message'])
+    bucket = message['bucket']
+    key = urllib.unquote_plus(message['key'].encode('utf8'))
     if (not bucket) or (not key):
         print("Unable to retrieve object from event.\n%s" % event)
         raise Exception("Unable to retrieve object from event.")
     return s3.Object(bucket, key)
+
+
+def event_webhook(event):
+    message = json.loads(event['Records'][0]['Sns']['Message'])
+    webhook = urllib.unquote_plus(message['webhook'].encode('utf8')).replace(':service', 'antivirus')
+    auth = message['auth']
+    if not webhook:
+        print("Unable to retrieve webhook from event.\n%s" % event)
+        raise Exception("Unable to retrieve webhook from event.")
+    return (webhook, auth)
 
 
 def download_s3_object(s3_object, local_prefix):
@@ -90,11 +103,34 @@ def sns_scan_results(s3_object, result):
     )
 
 
+def webhook_scan_started(s3_object, webhook, auth):
+    if webhook == '':
+        return
+    message = {}
+    post(webhook, json=message, headers={'Authorization': auth})
+
+
+def webhook_scan_results(s3_object, result, webhook, auth):
+    if webhook == '':
+        return
+    is_infected = False
+    if result == 'INFECTED':
+        is_infected = True
+    message = {
+        "filename": basename(s3_object.key),
+        "is_infected": is_infected,
+        "status": "success",
+    }
+    patch(webhook, json=message, headers={'Authorization': auth})
+
+
 def lambda_handler(event, context):
     start_time = datetime.utcnow()
     print("Script starting at %s\n" %
           (start_time.strftime("%Y/%m/%d %H:%M:%S UTC")))
     s3_object = event_object(event)
+    (webhook, auth) = event_webhook(event)
+    webhook_scan_started(s3_object, webhook, auth)
     file_path = download_s3_object(s3_object, "/tmp")
     clamav.update_defs_from_s3(AV_DEFINITION_S3_BUCKET, AV_DEFINITION_S3_PREFIX)
     scan_result = clamav.scan_file(file_path)
@@ -103,6 +139,7 @@ def lambda_handler(event, context):
         set_av_metadata(s3_object, scan_result)
     set_av_tags(s3_object, scan_result)
     sns_scan_results(s3_object, scan_result)
+    webhook_scan_results(s3_object, scan_result, webhook, auth)
     metrics.send(env=ENV, bucket=s3_object.bucket_name, key=s3_object.key, status=scan_result)
     # Delete downloaded file to free up room on re-usable lambda function container
     try:
