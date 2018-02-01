@@ -127,9 +127,9 @@ def scan_file(path):
     output = av_proc.communicate()[0]
     print("clamscan output:\n%s" % output)
     if av_proc.returncode == 0:
-        return AV_STATUS_CLEAN
+        return (AV_STATUS_CLEAN, output)
     elif av_proc.returncode == 1:
-        return AV_STATUS_INFECTED
+        return (AV_STATUS_INFECTED, output)
     else:
         msg = "Unexpected exit code from clamscan: %s.\n" % av_proc.returncode
         print(msg)

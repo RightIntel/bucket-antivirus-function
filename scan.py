@@ -110,16 +110,19 @@ def webhook_scan_started(s3_object, webhook, auth):
     post(webhook, json=message, headers={'Authorization': auth})
 
 
-def webhook_scan_results(s3_object, result, webhook, auth):
+def webhook_scan_results(s3_object, result, output, webhook, auth):
     if webhook == '':
         return
     is_infected = False
+    details = 'clean'
     if result == 'INFECTED':
         is_infected = True
+        details = 'INFECTED: ' + output
     message = {
         "filename": basename(s3_object.key),
         "is_infected": is_infected,
         "status": "success",
+        "result": details
     }
     patch(webhook, json=message, headers={'Authorization': auth})
 
@@ -133,13 +136,13 @@ def lambda_handler(event, context):
     webhook_scan_started(s3_object, webhook, auth)
     file_path = download_s3_object(s3_object, "/tmp")
     clamav.update_defs_from_s3(AV_DEFINITION_S3_BUCKET, AV_DEFINITION_S3_PREFIX)
-    scan_result = clamav.scan_file(file_path)
+    (scan_result, scan_output) = clamav.scan_file(file_path)
     print("Scan of s3://%s resulted in %s\n" % (os.path.join(s3_object.bucket_name, s3_object.key), scan_result))
     if "AV_UPDATE_METADATA" in os.environ:
         set_av_metadata(s3_object, scan_result)
     set_av_tags(s3_object, scan_result)
     sns_scan_results(s3_object, scan_result)
-    webhook_scan_results(s3_object, scan_result, webhook, auth)
+    webhook_scan_results(s3_object, scan_result, scan_output, webhook, auth)
     metrics.send(env=ENV, bucket=s3_object.bucket_name, key=s3_object.key, status=scan_result)
     # Delete downloaded file to free up room on re-usable lambda function container
     try:
